@@ -1,0 +1,30 @@
+# cvedaemon runtime lockfile — pinned transitive closure.
+#
+# Regenerate after changing pyproject.toml [project.dependencies]:
+#
+#     python -m venv /tmp/lock && /tmp/lock/bin/pip install . && \
+#       /tmp/lock/bin/pip freeze --exclude-editable > requirements.lock
+#
+# Then prune lines that are not in the closure of the runtime deps and add
+# any missing transitive packages by hand. Long-term we should adopt
+# pip-tools / uv pip compile to automate hash-bound resolution.
+
+aiosqlite==0.22.1
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.4.22
+click==8.3.3
+feedparser==6.0.12
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.14
+prometheus_client==0.25.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+PyYAML==6.0.3
+sgmllib3k==1.0.0
+sniffio==1.3.1
+structlog==25.5.0
+typing_extensions==4.15.0
+typing_inspection==0.4.2

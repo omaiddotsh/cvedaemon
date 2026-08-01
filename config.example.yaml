@@ -1,0 +1,145 @@
+# cvedaemon — full reference config. Copy to config.yaml and edit.
+# ${VAR} and ${VAR:-default} are expanded from the environment at load time.
+
+# ---------- top-level ----------
+poll_interval_seconds: 600
+lookback_minutes_on_start: 1440          # 24h on first run
+min_cvss: 9.0
+state_db: "./state/cvedaemon.db"
+action_log_retention_days: 90
+startup_grace_seconds: 300               # /healthz reports OK during startup
+log_level: "INFO"
+log_json: true
+
+# Health endpoints (bind to localhost in production behind a service mesh).
+health_host: "0.0.0.0"
+health_port: 8080
+
+# On-disk HTTP cache for advisory + enrichment GETs.
+http_cache_dir: "./state/http-cache"
+http_cache_ttl_seconds: 3600
+
+# ---------- sources ----------
+sources:
+  osv:
+    enabled: true
+    base_url: "https://api.osv.dev"
+    # Limit which ecosystems to ingest from OSV's per-ecosystem all.json files.
+    ecosystems:
+      - npm
+      - PyPI
+      - RubyGems
+      - crates.io
+      - NuGet
+      - Maven
+      - Go
+      - Packagist
+      - Pub
+      - Hex
+      - SwiftURL
+      - GitHub Actions
+
+  nvd:
+    enabled: true
+    base_url: "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    api_key: "${NVD_API_KEY:-}"          # raises rate limit if present
+    results_per_page: 200
+
+  github:
+    enabled: true
+    base_url: "https://api.github.com"
+    token: "${GITHUB_TOKEN:-}"           # strongly recommended
+    severity:
+      - critical
+
+  rss:
+    enabled: true
+    feeds:
+      - name: thehackernews
+        url: "https://feeds.feedburner.com/TheHackersNews"
+      - name: openssf-malicious
+        url: "https://github.com/ossf/malicious-packages/commits/main.atom"
+    keywords:
+      - "supply chain"
+      - "malicious package"
+      - "backdoor"
+      - "typosquat"
+      - "dependency confusion"
+      - "malware"
+      - "compromised package"
+      - "account takeover"
+
+# ---------- scoring ----------
+blast_radius:
+  score_threshold: 70
+  stars:
+    weight: 40
+    saturate_at: 5000
+  downloads:
+    weight: 40
+    thresholds:                          # window varies — see README
+      npm: 100000                        # weekly
+      PyPI: 400000                       # monthly (~100K/wk * 4.3)
+      RubyGems: 10000000                 # total (~2yr of 100K/wk)
+      "crates.io": 800000                # recent 60d
+      NuGet: 10000000                    # total
+      Maven: 1000                        # deps.dev dependents proxy
+      Go: 1000                           # deps.dev dependents proxy
+      Packagist: 50000                   # monthly
+      Pub: 5000
+      Hex: 5000
+      SwiftURL: 1000
+      "GitHub Actions": 1000
+  depsdev:
+    weight: 20
+    saturate_at: 1000
+
+# ---------- actions ----------
+actions:
+  - name: notify-slack
+    type: webhook
+    enabled: false
+    min_score: 70
+    ecosystems: []                       # empty = all
+    url: "${SLACK_WEBHOOK_URL:-}"
+    method: POST
+    headers: {}
+    timeout_seconds: 10
+
+  - name: file-issue
+    type: github_issue
+    enabled: false
+    min_score: 70
+    ecosystems: []
+    repo: "your-org/security-alerts"
+    token: "${GITHUB_TOKEN:-}"
+    labels: ["security", "cve"]
+    assignees: []
+
+  - name: notify-internal-api
+    type: webhook
+    enabled: false
+    min_score: 70
+    ecosystems: ["npm", "PyPI"]
+    url: "https://internal.example.com/cve-ingest"
+    method: POST
+    headers:
+      Authorization: "Bearer ${SCA_TOKEN:-}"
+    timeout_seconds: 15
+
+  - name: nebari-cve-response
+    type: nebari_cve_response
+    enabled: false
+    min_score: 90
+    ecosystems: []
+    script_path: "/opt/nebari/cve_response.py"
+    extra_args: []
+    timeout_seconds: 300
+
+  - name: dangerous-shell-example
+    type: shell
+    enabled: false
+    min_score: 95
+    ecosystems: []
+    command: "/usr/local/bin/page-oncall {{advisory_id}} {{ecosystem}} {{package}}"
+    timeout_seconds: 60

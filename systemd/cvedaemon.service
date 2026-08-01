@@ -1,0 +1,65 @@
+[Unit]
+Description=cvedaemon — critical OSS CVE + supply chain attack daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cvedaemon
+Group=cvedaemon
+WorkingDirectory=/var/lib/cvedaemon
+# No `-` prefix: a missing env file is a misconfiguration, not a silent
+# acceptable fallback. Operators must explicitly choose to omit the file.
+EnvironmentFile=/etc/cvedaemon/env
+ExecStart=/opt/cvedaemon/.venv/bin/cvedaemon run --config /etc/cvedaemon/config.yaml
+
+# Restart policy
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cvedaemon
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/cvedaemon
+
+# Network: daemon only needs IPv4/IPv6/UNIX sockets. Block raw + netlink so
+# a process compromise cannot pivot into kernel interfaces.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits. A runaway OSV parse should be killed by systemd, not
+# the kernel OOM killer, so set conservative caps. Override per-host if you
+# enable more ecosystems / larger NVD windows.
+MemoryMax=512M
+CPUQuota=50%
+LimitNOFILE=8192
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
