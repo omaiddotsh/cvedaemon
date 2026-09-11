@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12"]
+        python: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -40,11 +40,7 @@ jobs:
         run: ruff check src/ tests/
 
       - name: Mypy
-        # Mypy is non-blocking until we have a strict pass, but failures still
-        # show up in the run summary. Flip continue-on-error to false when the
-        # codebase typechecks clean under default settings.
         run: mypy src/
-        continue-on-error: true
 
       - name: Pytest
         run: pytest -q

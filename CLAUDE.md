@@ -123,7 +123,7 @@ cp config.example.yaml config.yaml
 ## Testing
 
 - `tests/test_*.py` — pytest-asyncio (auto mode). Mock HTTP with `respx`.
-- 32 tests at last run. Keep that bar.
+- 110 tests at last run. Keep that bar.
 - Add a mocked source test for new ingestors. Add a mocked action test for
   new action types.
 
@@ -134,11 +134,12 @@ cp config.example.yaml config.yaml
   README has full install steps.
 - **Docker**: multi-stage `Dockerfile`, runs as uid 10001. Mount config at
   `/etc/cvedaemon/config.yaml`, state at `/var/lib/cvedaemon`. Exposes 8080.
-- **k8s**: wire `/healthz` to `livenessProbe`, `/readyz` to `readinessProbe`.
+- **k8s**: wire `/healthz` to `livenessProbe`, `/readyz` to `readinessProbe`,
+  `/metrics` to Prometheus. Bind `health_host: 0.0.0.0` so kubelet can scrape
+  the pod IP.
 
 ## Open questions / future
 
 - Replace OSV per-ecosystem `all.json` (heavy) with deps.dev modified-since
   feed when API stabilizes.
-- Add Prometheus `/metrics` endpoint (currently only health probes).
-- Parallel source fetch with bounded `asyncio.Semaphore` — currently serial.
+- Raise `_SOURCE_FETCH_CONCURRENCY` if upstreams tolerate it.

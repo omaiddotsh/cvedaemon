@@ -202,11 +202,16 @@ Top-level fields:
 | Field | Default | Purpose |
 |---|---|---|
 | `poll_interval_seconds` | 600 | Time between poll cycles |
+| `cycle_timeout_seconds` | 0 (4× interval, min 120s) | Cancel a hung poll cycle |
 | `lookback_minutes_on_start` | 1440 | First-run scan window (24h) |
 | `min_cvss` | 9.0 | Drop advisories below this score |
 | `state_db` | `./state/cvedaemon.db` | SQLite path |
 | `action_log_retention_days` | 90 | Auto-prune `action_log` rows |
+| `processed_packages_retention_days` | 365 | Auto-prune `processed_packages` |
 | `startup_grace_seconds` | 300 | `/healthz` returns OK during startup |
+| `health_host` / `health_port` | `127.0.0.1:8080` | Probes + `/metrics`. Use `0.0.0.0` in Docker/k8s |
+| `action_circuit_failures` | 5 | Skip an action after N errors in the window |
+| `allow_private_urls` | false | Webhook SSRF guard (keep false in prod) |
 | `log_level` | `INFO` | structlog level |
 | `log_json` | true | JSON or console rendering |
 
@@ -219,6 +224,7 @@ Top-level fields:
 | `GET /healthz` | k8s `livenessProbe` | OK during grace, then OK iff a poll succeeded recently |
 | `GET /readyz` | k8s `readinessProbe` | Strict: OK only after first successful poll, no grace |
 | `GET /livez` | basic liveness | Always 200, just confirms process responds |
+| `GET /metrics` | Prometheus scrape | Counters/histograms for cycles, sources, actions |
 
 ### State
 
@@ -257,13 +263,29 @@ python -m venv /opt/cvedaemon/.venv
 /opt/cvedaemon/.venv/bin/pip install cvedaemon
 cp systemd/cvedaemon.service /etc/systemd/system/
 cp config.example.yaml /etc/cvedaemon/config.yaml
+install -m 600 /dev/null /etc/cvedaemon/env   # required; unit has no '-' prefix
 # edit /etc/cvedaemon/config.yaml + /etc/cvedaemon/env (GITHUB_TOKEN=...)
+# for systemd keep health_host: 127.0.0.1
 systemctl daemon-reload
 systemctl enable --now cvedaemon
 journalctl -u cvedaemon -f
 ```
 
-For local / non-systemd hosts, just run `cvedaemon run --config config.yaml`
+### Docker
+
+```bash
+cp config.example.yaml config.yaml
+# GITHUB_TOKEN in the environment; compose sets CVEDAEMON_HEALTH_HOST=0.0.0.0
+docker compose up --build -d
+curl -fsS http://127.0.0.1:8080/livez
+curl -fsS http://127.0.0.1:8080/metrics | head
+```
+
+Config is **not** baked into the image. Mount `/etc/cvedaemon/config.yaml` or
+the container exits on `FileNotFoundError`. State lives in
+`/var/lib/cvedaemon` (uid 10001).
+
+For local / non-systemd hosts, run `cvedaemon run --config config.yaml`
 under any process supervisor (`supervisord`, `runit`, `tmux`).
 
 ## Environment variables

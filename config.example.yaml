@@ -3,17 +3,30 @@
 
 # ---------- top-level ----------
 poll_interval_seconds: 600
+# 0 = 4× poll_interval (min 120s). Hung source fetches are cancelled at this ceiling.
+cycle_timeout_seconds: 0
 lookback_minutes_on_start: 1440          # 24h on first run
 min_cvss: 9.0
 state_db: "./state/cvedaemon.db"
 action_log_retention_days: 90
+processed_packages_retention_days: 365
 startup_grace_seconds: 300               # /healthz reports OK during startup
 log_level: "INFO"
 log_json: true
 
-# Health endpoints (bind to localhost in production behind a service mesh).
-health_host: "0.0.0.0"
+# Health + Prometheus /metrics.
+# systemd / local: 127.0.0.1. Docker / k8s: set CVEDAEMON_HEALTH_HOST=0.0.0.0
+health_host: "${CVEDAEMON_HEALTH_HOST:-127.0.0.1}"
 health_port: 8080
+
+# Circuit breaker: skip an action after N errors in the trailing window.
+action_circuit_failures: 5
+action_circuit_window_seconds: 600
+# Token-bucket on webhook + github_issue hosts. 0 disables.
+action_rate_per_second: 5.0
+action_rate_burst: 5
+# SSRF guard. Keep false unless the webhook target is a trusted RFC1918 SOAR.
+allow_private_urls: false
 
 # On-disk HTTP cache for advisory + enrichment GETs.
 http_cache_dir: "./state/http-cache"

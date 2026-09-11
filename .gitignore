@@ -14,3 +14,6 @@ state/
 *.db-shm
 .DS_Store
 config.yaml
+.env
+.env.*
+!.env.example
