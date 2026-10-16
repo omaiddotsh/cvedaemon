@@ -1,0 +1,36 @@
+services:
+  sev1daemon:
+    build: .
+    image: sev1daemon:local
+    restart: unless-stopped
+    # SIGTERM cancels the in-flight cycle; the daemon exits within ~10s.
+    stop_grace_period: 30s
+    # Note: plain Compose doesn't restart a container that turns unhealthy;
+    # alert on the health status (or /metrics) or run under an orchestrator.
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      NVD_API_KEY: ${NVD_API_KEY:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:-}
+      SEV1DAEMON_HEALTH_HOST: "0.0.0.0"
+      SEV1DAEMON_HEALTH_PORT: "8080"
+    volumes:
+      - ./config.yaml:/etc/sev1daemon/config.yaml:ro
+      - sev1daemon-state:/var/lib/sev1daemon
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3); sys.exit(0 if r.status==200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  sev1daemon-state:

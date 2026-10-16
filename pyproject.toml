@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sev1daemon"
+version = "0.1.0"
+description = "Alerts on critical open-source vulnerabilities and supply-chain attacks that hit packages people actually use."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "omaiddotsh" }]
+keywords = ["security", "vulnerability", "cve", "supply-chain", "osv", "alerting", "daemon"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+dependencies = [
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "structlog>=24.1",
+    "click>=8.1",
+    "pydantic>=2.6",
+    "aiosqlite>=0.20",
+    "feedparser>=6.0",
+    "prometheus_client>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "respx>=0.21",
+    "types-pyyaml",
+    "pip-audit>=2.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/omaiddotsh/cvedaemon"
+Issues = "https://github.com/omaiddotsh/cvedaemon/issues"
+
+[project.scripts]
+sev1daemon = "sev1daemon.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sev1daemon = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "ASYNC"]
+ignore = ["E501", "SIM105"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_unused_ignores = true
+ignore_missing_imports = true

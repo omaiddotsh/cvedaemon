@@ -1,0 +1,66 @@
+[Unit]
+Description=sev1daemon — critical OSS CVE + supply chain attack daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sev1daemon
+Group=sev1daemon
+WorkingDirectory=/var/lib/sev1daemon
+# No `-` prefix: a missing env file is a misconfiguration, not a silent
+# acceptable fallback. Operators must explicitly choose to omit the file.
+EnvironmentFile=/etc/sev1daemon/env
+ExecStart=/opt/sev1daemon/.venv/bin/sev1daemon run --config /etc/sev1daemon/config.yaml
+
+# Restart policy
+Restart=on-failure
+RestartSec=10s
+# SIGTERM cancels the in-flight cycle; the daemon exits within ~10s.
+TimeoutStopSec=30s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sev1daemon
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/sev1daemon
+
+# Network: daemon only needs IPv4/IPv6/UNIX sockets. Block raw + netlink so
+# a process compromise cannot pivot into kernel interfaces.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits. A runaway OSV parse should be killed by systemd, not
+# the kernel OOM killer, so set conservative caps. Override per-host if you
+# enable more ecosystems / larger NVD windows.
+MemoryMax=512M
+CPUQuota=50%
+LimitNOFILE=8192
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

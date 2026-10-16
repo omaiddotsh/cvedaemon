@@ -1,0 +1,159 @@
+# sev1daemon — full reference config. Copy to config.yaml and edit.
+# ${VAR} and ${VAR:-default} are expanded from the environment at load time.
+
+# ---------- top-level ----------
+poll_interval_seconds: 600
+# 0 = 4× poll_interval (min 120s). Hung source fetches are cancelled at this ceiling.
+cycle_timeout_seconds: 0
+lookback_minutes_on_start: 1440          # 24h on first run
+min_cvss: 9.0
+state_db: "./state/sev1daemon.db"
+action_log_retention_days: 90
+processed_packages_retention_days: 365
+advisory_retention_days: 365            # prune finished advisories; 0 = keep forever
+startup_grace_seconds: 300               # /healthz reports OK during startup
+log_level: "INFO"
+log_json: true
+
+# Health + Prometheus /metrics.
+# systemd / local: 127.0.0.1. Docker / k8s: set SEV1DAEMON_HEALTH_HOST=0.0.0.0
+health_host: "${SEV1DAEMON_HEALTH_HOST:-127.0.0.1}"
+health_port: 8080
+
+# Circuit breaker: skip an action after N errors in the trailing window. 0 disables.
+action_circuit_failures: 5
+action_circuit_window_seconds: 600
+# Token-bucket on webhook + github_issue hosts. 0 disables.
+action_rate_per_second: 5.0
+action_rate_burst: 5
+# SSRF guard. Keep false unless the webhook target is a trusted RFC1918 SOAR.
+allow_private_urls: false
+# Cycles an advisory may stay unfinished (failed or skipped actions) before it
+# is given up on and marked processed. 48 × 10-min polls ≈ 8h of retries.
+advisory_max_attempts: 48
+
+# On-disk HTTP cache for advisory + enrichment GETs.
+http_cache_dir: "./state/http-cache"
+http_cache_ttl_seconds: 3600
+
+# ---------- sources ----------
+sources:
+  osv:
+    enabled: true
+    base_url: "https://api.osv.dev"       # unused: data comes from the osv-vulnerabilities bucket
+    # Ecosystems to poll. Each cycle reads the ecosystem's modified_id.csv
+    # change index and fetches only the records changed since the last poll.
+    ecosystems:
+      - npm
+      - PyPI
+      - RubyGems
+      - crates.io
+      - NuGet
+      - Maven
+      - Go
+      - Packagist
+      - Pub
+      - Hex
+      - SwiftURL
+      - GitHub Actions
+
+  # Off by default: NVD records list CPEs, not package names, so they never
+  # alert on their own (measured: 97% of ingest volume, 0 alerts).
+  nvd:
+    enabled: false
+    base_url: "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    api_key: "${NVD_API_KEY:-}"          # raises rate limit if present
+    results_per_page: 200
+
+  github:
+    enabled: true
+    base_url: "https://api.github.com"
+    token: "${GITHUB_TOKEN:-}"           # strongly recommended
+    severity:
+      - critical
+
+  rss:
+    enabled: true
+    feeds:
+      - name: thehackernews
+        url: "https://feeds.feedburner.com/TheHackersNews"
+      # OpenSSF malicious packages arrive through OSV as MAL- records and are
+      # scored like CVEs (only popular packages alert), so no RSS feed for them.
+    # Substring match on title + summary; every match fires as a supply-chain
+    # alert, so keep phrases specific (a bare "malware" matches most news).
+    keywords:
+      - "supply chain"
+      - "malicious package"
+      - "malicious npm"
+      - "malicious pypi"
+      - "malicious crate"
+      - "backdoor"
+      - "typosquat"
+      - "dependency confusion"
+      - "compromised package"
+      - "account takeover"
+
+# ---------- scoring ----------
+blast_radius:
+  score_threshold: 70
+  stars:
+    weight: 40
+    saturate_at: 5000
+  downloads:
+    weight: 40
+    # Downloads that saturate the signal; each registry reports a different
+    # window. Maven, Go, SwiftURL and GitHub Actions have no download source:
+    # their score is renormalized over stars (+ deps.dev dependents for Maven).
+    thresholds:
+      npm: 100000                        # last week
+      PyPI: 400000                       # last month (~100K/wk * 4.3)
+      RubyGems: 10000000                 # all time (~2yr of 100K/wk)
+      "crates.io": 800000                # last 90 days
+      NuGet: 10000000                    # all time
+      Packagist: 50000                   # last month
+      Pub: 250000                        # last 30 days
+      Hex: 250000                        # last 90 days
+  depsdev:
+    weight: 20
+    saturate_at: 1000
+
+# ---------- actions ----------
+actions:
+  - name: notify-slack
+    type: webhook
+    enabled: false
+    min_score: 70
+    ecosystems: []                       # empty = all
+    url: "${SLACK_WEBHOOK_URL:-}"
+    method: POST
+    headers: {}
+    timeout_seconds: 10
+
+  - name: file-issue
+    type: github_issue
+    enabled: false
+    min_score: 70
+    ecosystems: []
+    repo: "your-org/security-alerts"
+    token: "${GITHUB_TOKEN:-}"
+    labels: ["security", "cve"]
+    assignees: []
+
+  - name: notify-internal-api
+    type: webhook
+    enabled: false
+    min_score: 70
+    ecosystems: ["npm", "PyPI"]
+    url: "https://internal.example.com/cve-ingest"
+    method: POST
+    headers:
+      Authorization: "Bearer ${WEBHOOK_TOKEN:-}"
+    timeout_seconds: 15
+
+  - name: dangerous-shell-example
+    type: shell
+    enabled: false
+    min_score: 95
+    ecosystems: []
+    command: "/usr/local/bin/page-oncall {{advisory_id}} {{ecosystem}} {{package}}"
+    timeout_seconds: 60
