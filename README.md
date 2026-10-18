@@ -142,16 +142,22 @@ Each poll cycle:
    that only partly succeeds still hands over what it got, but its checkpoint
    doesn't move, so the missed part is queried again next cycle.
 2. **Merge** advisories by ID across sources (richer affected list wins).
-3. **Skip** advisories already fully processed (stored in SQLite), and
-   **re-queue** advisories an earlier cycle stored but didn't finish.
-4. **Route** by source type:
+3. **Store** every new advisory as pending, and only then move the sources'
+   checkpoints: a cycle killed at any point leaves each advisory either in
+   the next query window or in the re-queue, never lost.
+4. **Skip** advisories already fully processed (stored in SQLite), unless
+   upstream has since added affected packages to them (OSV and GHSA do this
+   after publication; the new packages are scored, the old ones are not sent
+   again), and **re-queue** advisories an earlier cycle stored but didn't
+   finish.
+5. **Route** by source type:
    - **Scored path** (CVEs and `malicious_package` records): enrich each
      affected package (stars, downloads, dependents), score 0..100, fire
      actions only if score ≥ threshold.
    - **Supply chain path:** Skip enrichment and scoring entirely. Score fixed
      at 100, always fires — popularity is irrelevant for active compromises.
-5. **Fire** matching actions; record each invocation in `action_log` table.
-6. **Finish** the advisory only when every matching action succeeded for
+6. **Fire** matching actions; record each invocation in `action_log` table.
+7. **Finish** the advisory only when every matching action succeeded for
    every package that crossed the threshold. Otherwise it stays pending and
    is retried next cycle (actions that already succeeded aren't re-run), up
    to `advisory_max_attempts` cycles.
@@ -202,7 +208,10 @@ Repos for stars come from deps.dev's source link, the registry's metadata
 (Packagist, Hex, Pub), or the package name itself (Go `github.com/...`,
 SwiftURL, GitHub Actions `owner/repo`). Dependents are counted for the
 package's default version on deps.dev (and the newest stable release when the
-default is a prerelease).
+default is a prerelease). deps.dev counts against the version each dependent
+last resolved to, so a package that releases often can show 0 dependents on
+its recent versions; that costs it at most the 20 dependents points and never
+over-scores.
 
 Per-ecosystem download thresholds (configurable; each registry reports a
 different window):

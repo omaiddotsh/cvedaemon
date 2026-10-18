@@ -48,9 +48,21 @@ class NvdSource(Source):
 
     async def fetch(self, since: datetime) -> list[Advisory]:
         now = datetime.now(timezone.utc)
-        # Clamp window to 120 days — NVD rejects wider ranges with 400.
-        if (now - since).days > _NVD_WINDOW_MAX_DAYS:
-            since = now.replace(microsecond=0) - timedelta(days=_NVD_WINDOW_MAX_DAYS)
+        # Clamp the window to 120 days: NVD rejects anything wider, even by
+        # an hour, with "Date range cannot exceed 120 days" (HTTP 404). The
+        # start is pulled a minute inside the limit so the request is still
+        # valid by the time it is sent. Compare the full timedelta: ``.days``
+        # truncates, so a 120d 1h window would slip through and fail every
+        # cycle until it had grown past 121 days.
+        if now - since > timedelta(days=_NVD_WINDOW_MAX_DAYS):
+            clamped = now.replace(microsecond=0) - timedelta(days=_NVD_WINDOW_MAX_DAYS, minutes=-1)
+            log.warning(
+                "nvd.window_clamped",
+                requested_since=since.isoformat(),
+                since=clamped.isoformat(),
+                dropped_days=(clamped - since).days,
+            )
+            since = clamped
 
         headers: dict[str, str] = {}
         if self._api_key:

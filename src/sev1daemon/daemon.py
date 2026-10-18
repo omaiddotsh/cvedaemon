@@ -21,6 +21,10 @@ Delivery guarantees:
 
 * A source's checkpoint only advances after a complete fetch, to the time the
   fetch started; queries overlap the previous window (dedupe makes that free).
+* Every advisory a cycle collected is stored (``processed=0``) before any
+  checkpoint moves. A cycle cancelled or killed at any point therefore leaves
+  each advisory either still inside some source's next query window or in the
+  re-queue; nothing fetched is lost.
 * An advisory is marked processed only once every matching action for every
   package crossing the threshold has succeeded. Unfinished advisories are
   re-queued each cycle, up to ``advisory_max_attempts`` cycles.
@@ -38,6 +42,7 @@ import tempfile
 import time
 import traceback
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -72,12 +77,29 @@ _SOURCE_FETCH_CONCURRENCY = 2
 _CANCEL_GRACE_SECONDS = 10.0
 
 
+@dataclass
+class _Collected:
+    """One cycle's fetch results, and the checkpoints the complete fetches earned.
+
+    The checkpoints are written only after the advisories are stored, so a
+    cycle that dies in between never moves a window past an unstored record.
+    """
+
+    advisories: list[Advisory] = field(default_factory=list)
+    checkpoints: list[tuple[str, datetime]] = field(default_factory=list)  # (source, fetch start)
+
+
 class Daemon:
-    def __init__(self, cfg: Config, *, dry_run: bool = False):
+    def __init__(self, cfg: Config, *, dry_run: bool = False, serve_health: bool = True):
         """``dry_run``: score and log but never run actions. Pair it with
-        ``dry_run_config`` so state writes land in a throwaway DB snapshot."""
+        ``dry_run_config`` so state writes land in a throwaway DB snapshot.
+
+        ``serve_health``: bind the health/metrics port. One-shot commands
+        (``check``, ``replay``) pass False so they can run next to the daemon,
+        which already holds that port."""
         self._cfg = cfg
         self._dry_run = dry_run
+        self._serve_health = serve_health
         self._http = HttpClient(
             cache_dir=cfg.http_cache_dir,
             cache_ttl_seconds=cfg.http_cache_ttl_seconds,
@@ -133,17 +155,18 @@ class Daemon:
             self._stars,
             self._metrics,
         )
-        self._health_shutdown = start_health_server(
-            self._cfg.health_host,
-            self._cfg.health_port,
-            self._health_state,
-            self._metrics,
-        )
+        if self._serve_health:
+            self._health_shutdown = start_health_server(
+                self._cfg.health_host,
+                self._cfg.health_port,
+                self._health_state,
+                self._metrics,
+            )
         log.info(
             "daemon.setup",
             sources=[s.name for s in self._sources],
             actions=self._dispatcher.runner_count,
-            health=f"{self._cfg.health_host}:{self._cfg.health_port}",
+            health=f"{self._cfg.health_host}:{self._cfg.health_port}" if self._serve_health else "off",
             cycle_timeout=self._cfg.effective_cycle_timeout(),
         )
 
@@ -285,7 +308,12 @@ class Daemon:
         self._health_state.mark_poll_start()
         cycle_started = time.monotonic()
         try:
-            advisories = await self._pipeline.new_advisories(await self._collect())
+            collected = await self._collect()
+            advisories = await self._pipeline.new_advisories(collected.advisories)
+            # Store first, then move the checkpoints: from here on a cancelled
+            # or crashed cycle re-queues these rows instead of losing them.
+            await self._pipeline.store(advisories)
+            await self._commit_checkpoints(collected.checkpoints)
             advisories += await self._pipeline.requeued(exclude={a.id for a in advisories})
             log.info("poll.collected", count=len(advisories))
             self._metrics.advisories_collected_total.inc(len(advisories))
@@ -317,11 +345,12 @@ class Daemon:
         if evicted:
             log.info("housekeeping.cache_evicted", files=evicted)
 
-    async def _collect(self) -> list[Advisory]:
+    async def _collect(self) -> _Collected:
         # Bounded concurrency: be polite to upstream feeds, but don't serialize
         # entirely — a slow NVD pull no longer blocks GHSA.
         sem = asyncio.Semaphore(_SOURCE_FETCH_CONCURRENCY)
-        results: list[Advisory] = []
+        collected = _Collected()
+        results = collected.advisories
 
         async def _one(src: Source) -> None:
             async with sem:
@@ -347,12 +376,18 @@ class Daemon:
                 self._metrics.source_last_success_timestamp.labels(source=src.name).set(
                     fetch_started.timestamp()
                 )
-                await self._state.set_poll_success(src.name, at=fetch_started)
-                self._health_state.mark_source(src.name, ok=True)
                 results.extend(advs)
+                # The checkpoint is earned, but written by _run_cycle once the
+                # advisories are stored (see _Collected).
+                collected.checkpoints.append((src.name, fetch_started))
 
         await asyncio.gather(*(_one(s) for s in self._sources))
-        return results
+        return collected
+
+    async def _commit_checkpoints(self, checkpoints: list[tuple[str, datetime]]) -> None:
+        for name, fetch_started in checkpoints:
+            await self._state.set_poll_success(name, at=fetch_started)
+            self._health_state.mark_source(name, ok=True)
 
     async def _source_failed(self, name: str, error: str, *, incomplete: bool = False) -> None:
         """Record a failed or partial fetch; the checkpoint stays where it was."""
@@ -427,7 +462,8 @@ def _sqlite_snapshot(src: Path, dst: Path) -> None:
 async def run_one_shot(cfg: Config, *, dry_run: bool = False) -> int:
     """Run one poll cycle. ``dry_run`` disables action dispatch and uses a DB snapshot."""
     async with dry_run_config(cfg, dry_run) as run_cfg:
-        d = Daemon(run_cfg, dry_run=dry_run)
+        # No health server: the daemon usually holds that port already.
+        d = Daemon(run_cfg, dry_run=dry_run, serve_health=False)
         try:
             await d.setup()
         except Exception:

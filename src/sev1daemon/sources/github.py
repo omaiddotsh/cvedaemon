@@ -72,6 +72,10 @@ class GithubSource(Source):
         url = f"{self._base}/advisories"
         params = {
             "type": "reviewed",
+            # Retractions bump updated_at, so a withdrawn advisory lands in the
+            # poll window the moment it is withdrawn; _parse_ghsa drops any that
+            # still come through (the filter is advisory, the parse check is not).
+            "is_withdrawn": "false",
             "modified": f">={since.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
             "per_page": 100,
         }
@@ -167,6 +171,10 @@ class GithubSource(Source):
 def _parse_ghsa(raw: dict[str, Any], min_cvss: float) -> Advisory | None:
     ghsa_id = raw.get("ghsa_id")
     if not ghsa_id:
+        return None
+    if raw.get("withdrawn_at"):
+        # Retracted; OSV drops the same record on its ``withdrawn`` field, and
+        # the GitHub copy must not survive the merge and alert on its own.
         return None
     cvss = _ghsa_cvss(raw)
     if cvss is not None and cvss < min_cvss:

@@ -84,6 +84,15 @@ class DepsDevClient:
         stable release is asked as well and the larger count is used: each
         is a real per-version count, so the larger is still a lower bound on
         the package's dependents.
+
+        Known limit: deps.dev counts dependents against the version each
+        dependent resolved to when deps.dev last walked its graph, so a
+        package that releases often can show 0 on every recent version
+        (cargo serde 1.0.215 to 1.0.229 all answer 0 while 1.0.210 answers
+        44,518; checked live 2026-10). That under-scores by at most the
+        signal's weight and never over-scores, which is the conservative
+        side; walking back far enough to find the counted version would
+        cost one request per release.
         """
         if not self.supports(ecosystem) or not name:
             return None

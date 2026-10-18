@@ -87,7 +87,11 @@ src/sev1daemon/
 
 ## Delivery guarantees (don't regress these)
 
-- A source's checkpoint only advances after a complete fetch.
+- A source's checkpoint only advances after a complete fetch, and only after
+  every advisory that fetch returned is stored (`processed=0`). Nothing a
+  cycle collected is lost if the cycle is cancelled or the process dies.
+- A processed advisory that comes back modified with packages the daemon
+  never scored is queued again; packages that already alerted are not re-sent.
 - An advisory is marked processed only when every matching action succeeded
   for every package over the threshold. Otherwise it is re-queued next cycle,
   up to `advisory_max_attempts`.

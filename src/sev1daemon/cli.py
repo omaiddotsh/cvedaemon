@@ -11,7 +11,8 @@ from urllib.parse import urlsplit
 import click
 
 from sev1daemon.actions.dispatcher import ActionDispatcher
-from sev1daemon.config import Config
+from sev1daemon.actions.guards import is_safe_url_async
+from sev1daemon.config import Config, WebhookAction
 from sev1daemon.daemon import run_daemon, run_one_shot
 from sev1daemon.enrich import DepsDevClient, GithubStarsClient, RegistryClient
 from sev1daemon.http import HttpClient
@@ -81,7 +82,9 @@ def check(config_path: str, dry_run: bool) -> None:
 def show_config(config_path: str) -> None:
     """Dump the effective config as JSON (secrets redacted)."""
     cfg = _load(config_path)
-    raw = cfg.model_dump()
+    # warnings=False: disabled placeholder actions are model_construct()ed and
+    # would print serializer warnings to stderr for every missing field.
+    raw = cfg.model_dump(warnings=False)
     raw = _redact_secrets(raw)
     click.echo(json.dumps(raw, indent=2, default=str))
 
@@ -138,6 +141,23 @@ async def _test_action(cfg: Config, action_name: str) -> None:
         if runner is None:
             click.echo(f"action not found: {action_name}", err=True)
             sys.exit(2)
+        # Same SSRF guard the daemon applies on every dispatch: a target the
+        # daemon would refuse must not pass its own test.
+        action_cfg = next((a for a in cfg.actions if a.name == action_name), None)
+        if isinstance(action_cfg, WebhookAction):
+            ok, reason = await is_safe_url_async(
+                action_cfg.url, allow_private=cfg.allow_private_urls
+            )
+            if not ok:
+                click.echo(
+                    json.dumps({"status": "skipped", "detail": f"ssrf_blocked: {reason}"}, indent=2)
+                )
+                click.echo(
+                    f"refusing: the daemon would skip every dispatch to this url ({reason}); "
+                    "fix the url, or set allow_private_urls: true for a trusted private target",
+                    err=True,
+                )
+                sys.exit(1)
         synthetic = Alert(
             advisory=Advisory(
                 id="TEST-0001",
@@ -157,6 +177,8 @@ async def _test_action(cfg: Config, action_name: str) -> None:
         )
         res = await runner.run(synthetic)
         click.echo(json.dumps({"status": res.status, "detail": res.detail}, indent=2))
+        if res.status != "ok":
+            sys.exit(1)
     finally:
         await state.close()
         await http.aclose()
@@ -186,7 +208,8 @@ async def _replay(cfg: Config, advisory_id: str, dry_run: bool) -> None:
 
     # Dry runs work on a snapshot so they can't mark anything processed/fired.
     async with dry_run_config(cfg, dry_run) as run_cfg:
-        d = Daemon(run_cfg, dry_run=dry_run)
+        # No health server: the daemon usually holds that port already.
+        d = Daemon(run_cfg, dry_run=dry_run, serve_health=False)
         await d.setup()
         try:
             fired = await d.replay(advisory_id)
@@ -206,7 +229,11 @@ def _redact_url(value: str) -> str:
     parts = urlsplit(value)
     if not parts.scheme or not parts.hostname:
         return redact(value)
-    host = parts.hostname + (f":{parts.port}" if parts.port else "")
+    try:
+        port = parts.port
+    except ValueError:
+        return redact(value)
+    host = parts.hostname + (f":{port}" if port else "")
     hidden = parts.path not in ("", "/") or parts.query or parts.username
     return f"{parts.scheme}://{host}" + ("/<redacted>" if hidden else "")
 

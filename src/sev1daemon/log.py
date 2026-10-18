@@ -80,6 +80,10 @@ def configure_logging(level: str = "INFO", json_output: bool = True) -> None:
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
+            # log.exception() sets exc_info=True; without this the renderer
+            # prints "exc_info": true and the traceback is lost. Rendered before
+            # redaction so the traceback text is scrubbed too.
+            structlog.processors.format_exc_info,
             _redact_processor,
             renderer,
         ],

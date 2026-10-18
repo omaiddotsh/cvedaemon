@@ -82,12 +82,48 @@ class AlertPipeline:
     # ---------- queue ----------
 
     async def new_advisories(self, advisories: list[Advisory]) -> list[Advisory]:
-        """Merge records sharing an id across sources; drop already-processed ones."""
+        """Merge records sharing an id across sources; drop already-processed ones.
+
+        A processed advisory comes back when upstream has modified it and the
+        new record lists packages this daemon never scored: OSV and GHSA
+        routinely add affected packages after publication, and a popular one
+        added later must still alert.
+        """
         merged: dict[str, Advisory] = {}
         for adv in advisories:
             existing = merged.get(adv.id)
             merged[adv.id] = existing.merge(adv) if existing else adv
-        return [adv for adv in merged.values() if not await self._state.advisory_seen(adv.id)]
+        out: list[Advisory] = []
+        for adv in merged.values():
+            if not await self._state.advisory_seen(adv.id) or await self._reopened(adv):
+                out.append(adv)
+        return out
+
+    async def _reopened(self, adv: Advisory) -> bool:
+        """Queue a processed advisory again if upstream added packages to it."""
+        if adv.modified is None:
+            return False
+        stored = await self._state.stored_modified(adv.id)
+        if stored is not None and adv.modified <= stored:
+            return False
+        packages = [
+            (p.ecosystem, p.name) for p in adv.affected if not p.ecosystem.startswith("cpe:")
+        ]
+        missing = await self._state.unscored_packages(adv.id, packages)
+        if not missing:
+            return False
+        log.info(
+            "poll.reopened",
+            advisory=adv.id,
+            new_packages=[f"{eco}/{name}" for eco, name in missing],
+        )
+        await self._state.reopen(adv.id)
+        return True
+
+    async def store(self, advisories: list[Advisory]) -> None:
+        """Persist collected advisories (``processed=0``) so a cycle that dies
+        before processing them re-queues them instead of losing them."""
+        await self._state.upsert_advisories(advisories)
 
     async def requeued(self, exclude: set[str]) -> list[Advisory]:
         """Advisories an earlier cycle stored but never finished."""
@@ -147,7 +183,17 @@ class AlertPipeline:
             await self._state.record_package_score(
                 adv.id, pkg.ecosystem, pkg.name, score, breakdown_dict, False
             )
-            if not adv.is_supply_chain and not self._scorer.crosses_threshold(score):
+            alerting = adv.is_supply_chain or self._scorer.crosses_threshold(score)
+            log.info(
+                "package.scored",
+                advisory=adv.id,
+                ecosystem=pkg.ecosystem,
+                package=pkg.name,
+                score=round(score, 2),
+                alert=alerting,
+                dry_run=self._dispatcher.dry_run,
+            )
+            if not alerting:
                 continue
             alert = Alert(advisory=adv, package=pkg, score=score, breakdown=breakdown)
             outcome = await self._dispatch(alert, breakdown_dict)

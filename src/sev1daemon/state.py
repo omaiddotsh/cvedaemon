@@ -171,12 +171,17 @@ class StateStore:
             if version <= current:
                 continue
             log.info("state.migration_apply", version=version)
-            await conn.executescript(sql)
-            await conn.execute(
-                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                (version, _now()),
+            # One transaction per migration, version row included: SQLite DDL
+            # is transactional, so a crash half-way leaves nothing behind. Two
+            # commits here would let a crash between them strand an
+            # ALTER TABLE without its version row, and every later start would
+            # fail on "duplicate column".
+            await conn.executescript(
+                "BEGIN;\n"
+                + sql
+                + "\nINSERT INTO schema_version (version, applied_at) "
+                + f"VALUES ({int(version)}, '{_now()}');\nCOMMIT;"
             )
-            await conn.commit()
 
     # ---------- advisories ----------
 
@@ -189,10 +194,19 @@ class StateStore:
         return bool(row and row[0])
 
     async def upsert_advisory(self, adv: Advisory) -> None:
-        # default=str renders datetime fields inside adv.raw deterministically.
-        payload = json.dumps(_advisory_to_dict(adv), default=str)
+        await self.upsert_advisories([adv])
+
+    async def upsert_advisories(self, advisories: list[Advisory]) -> None:
+        """Store advisories as pending (``processed=0``) in one transaction.
+
+        An existing row keeps its ``processed`` flag and attempt count; only
+        the record itself is refreshed.
+        """
+        if not advisories:
+            return
         conn = self._require_conn()
-        await conn.execute(
+        now = _now()
+        await conn.executemany(
             """
             INSERT INTO advisories (id, source, advisory_class, cvss, summary,
                                     published, modified, payload, processed, seen_at)
@@ -203,17 +217,58 @@ class StateStore:
                 modified=excluded.modified,
                 payload=excluded.payload
             """,
-            (
-                adv.id,
-                adv.source.value,
-                adv.advisory_class.value,
-                adv.cvss,
-                adv.summary,
-                adv.published.isoformat() if adv.published else None,
-                adv.modified.isoformat() if adv.modified else None,
-                payload,
-                _now(),
-            ),
+            [
+                (
+                    adv.id,
+                    adv.source.value,
+                    adv.advisory_class.value,
+                    adv.cvss,
+                    adv.summary,
+                    adv.published.isoformat() if adv.published else None,
+                    adv.modified.isoformat() if adv.modified else None,
+                    # default=str renders datetime fields inside adv.raw deterministically.
+                    json.dumps(_advisory_to_dict(adv), default=str),
+                    now,
+                )
+                for adv in advisories
+            ],
+        )
+        await conn.commit()
+
+    async def stored_modified(self, advisory_id: str) -> datetime | None:
+        """The ``modified`` stamp of the stored record, or None if unknown."""
+        conn = self._require_conn()
+        async with conn.execute(
+            "SELECT modified FROM advisories WHERE id = ?", (advisory_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return _parse_stored_dt(row[0]) if row and row[0] else None
+
+    async def unscored_packages(
+        self, advisory_id: str, packages: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """The given (ecosystem, name) pairs this advisory has no score row for."""
+        if not packages:
+            return []
+        conn = self._require_conn()
+        async with conn.execute(
+            "SELECT ecosystem, package FROM processed_packages WHERE advisory_id = ?",
+            (advisory_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        scored = {(str(eco), str(name)) for eco, name in rows}
+        return [pkg for pkg in packages if pkg not in scored]
+
+    async def reopen(self, advisory_id: str) -> None:
+        """Queue a processed advisory again (upstream added packages to it).
+
+        Scores, fired flags and the action log are kept, so packages that
+        already alerted are not sent again; only the new ones are scored.
+        """
+        conn = self._require_conn()
+        await conn.execute(
+            "UPDATE advisories SET processed = 0, attempts = 0, last_error = NULL WHERE id = ?",
+            (advisory_id,),
         )
         await conn.commit()
 

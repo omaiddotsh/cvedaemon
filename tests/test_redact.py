@@ -52,3 +52,24 @@ def test_stdlib_http_logs_are_quiet_and_redacted():
     assert _RedactStdlibFilter().filter(record) is True
     assert "XXXXSECRETXXXX" not in record.getMessage()
     assert record.getMessage().startswith("posting to ")
+
+
+def test_log_exception_renders_and_redacts_the_traceback(capsys):
+    """log.exception() must print the traceback (not ``"exc_info": true``),
+    and the traceback text goes through the same redaction as everything else."""
+    import structlog
+
+    from sev1daemon.log import configure_logging, get_logger
+
+    configure_logging("INFO", json_output=True)
+    structlog.configure(cache_logger_on_first_use=False)
+    log = get_logger("review")
+    try:
+        raise RuntimeError("posted to https://hooks.slack.com/services/T/B/supersecret")
+    except RuntimeError:
+        log.exception("action.unhandled", action="hook")
+    out = capsys.readouterr().out
+    assert "Traceback (most recent call last)" in out
+    assert "RuntimeError" in out
+    assert '"exc_info": true' not in out
+    assert "supersecret" not in out

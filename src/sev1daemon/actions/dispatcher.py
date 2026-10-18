@@ -114,6 +114,16 @@ class ActionDispatcher:
         self, cfg: AnyAction, runner: Action, alert: Alert
     ) -> ActionResult:
         if self.dry_run:
+            # The decision is the whole point of a dry run: say what would go out.
+            log.info(
+                "action.dry_run",
+                action=runner.name,
+                type=runner.type,
+                advisory=alert.advisory.id,
+                ecosystem=alert.package.ecosystem,
+                package=alert.package.name,
+                score=alert.score,
+            )
             await self._record_skip(runner, alert, "dry_run")
             return ActionResult(status="skipped", detail="dry_run")
 

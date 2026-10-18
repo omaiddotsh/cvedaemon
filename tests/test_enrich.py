@@ -46,6 +46,31 @@ async def test_registry_pypi_downloads():
 
 
 @respx.mock
+async def test_registry_pypi_name_is_pep503_normalised():
+    """pypistats only answers for the normalised name: ``Django`` and
+    ``ruamel.yaml`` are 404, ``django`` and ``ruamel-yaml`` are 200 (checked
+    live 2026-10). An advisory or ``score --name Django`` must not lose the
+    downloads signal over the spelling."""
+    respx.get("https://pypistats.org/api/packages/django/recent").mock(
+        return_value=Response(200, json={"data": {"last_month": 41_000_000}})
+    )
+    respx.get("https://pypistats.org/api/packages/ruamel-yaml/recent").mock(
+        return_value=Response(200, json={"data": {"last_month": 20_000_000}})
+    )
+    respx.get("https://pypistats.org/api/packages/zope-interface/recent").mock(
+        return_value=Response(200, json={"data": {"last_month": 15_000_000}})
+    )
+    http = HttpClient()
+    try:
+        client = RegistryClient(http)
+        assert await client.downloads("PyPI", "Django") == 41_000_000
+        assert await client.downloads("PyPI", "ruamel.yaml") == 20_000_000
+        assert await client.downloads("PyPI", "Zope__Interface") == 15_000_000
+    finally:
+        await http.aclose()
+
+
+@respx.mock
 async def test_registry_handles_404():
     respx.get(
         "https://api.npmjs.org/downloads/point/last-week/this-pkg-does-not-exist"

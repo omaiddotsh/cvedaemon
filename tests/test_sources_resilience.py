@@ -211,6 +211,48 @@ async def test_nvd_complete_fetch_returns_list(http):
 
 
 @respx.mock
+async def test_nvd_window_wider_than_120_days_is_clamped_to_120(http, monkeypatch):
+    """NVD rejects a lastMod window wider than 120 days, even by an hour
+    ("Date range cannot exceed 120 days", HTTP 404, checked live 2026-10).
+    ``(now - since).days`` truncates, so a 120d 1h window used to go out
+    unclamped and fail every cycle until it had grown past 121 days."""
+    rec_log = _RecordingLog()
+    monkeypatch.setattr(nvd_mod, "log", rec_log)
+    route = respx.get(NVD_URL).mock(
+        return_value=httpx.Response(200, json={"totalResults": 0, "vulnerabilities": []})
+    )
+    since = datetime.now(timezone.utc) - timedelta(days=120, hours=1)
+    await _nvd(http).fetch(since)
+    params = route.calls.last.request.url.params
+    start = datetime.strptime(params["lastModStartDate"], "%Y-%m-%dT%H:%M:%S.000Z").replace(
+        tzinfo=timezone.utc
+    )
+    end = datetime.strptime(params["lastModEndDate"], "%Y-%m-%dT%H:%M:%S.000Z").replace(
+        tzinfo=timezone.utc
+    )
+    assert end - start <= timedelta(days=120)
+    assert end - start > timedelta(days=119, hours=23)
+    # Clamping drops part of the requested window; that must be visible.
+    clamped = rec_log.named("nvd.window_clamped")
+    assert len(clamped) == 1
+    assert clamped[0]["requested_since"] == since.isoformat()
+
+
+@respx.mock
+async def test_nvd_window_within_120_days_is_not_clamped(http, monkeypatch):
+    rec_log = _RecordingLog()
+    monkeypatch.setattr(nvd_mod, "log", rec_log)
+    route = respx.get(NVD_URL).mock(
+        return_value=httpx.Response(200, json={"totalResults": 0, "vulnerabilities": []})
+    )
+    since = (datetime.now(timezone.utc) - timedelta(days=119, hours=23)).replace(microsecond=0)
+    await _nvd(http).fetch(since)
+    params = route.calls.last.request.url.params
+    assert params["lastModStartDate"] == since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert rec_log.named("nvd.window_clamped") == []
+
+
+@respx.mock
 async def test_nvd_malformed_record_is_logged_and_skipped(http, monkeypatch):
     rec_log = _RecordingLog()
     monkeypatch.setattr(nvd_mod, "log", rec_log)
@@ -311,6 +353,33 @@ async def test_github_page_cap_is_incomplete(http, monkeypatch):
         await _gh(http).fetch(SINCE)
     assert route.call_count == 2
     assert [a.id for a in exc.value.advisories] == ["GHSA-cccc-cccc-0001", "GHSA-cccc-cccc-0002"]
+
+
+@respx.mock
+async def test_github_withdrawn_advisory_is_dropped(http):
+    """A retraction bumps updated_at, so a withdrawn GHSA lands in the poll
+    window the moment it is withdrawn (GHSA-vv44-hjm2-qw2f, 2026-10-16: the
+    withdrawal and the last update are one second apart). OSV drops its copy on
+    ``withdrawn``; the GitHub copy must go too, or it survives the merge and
+    alerts as a live critical CVE."""
+    withdrawn = _ghsa("GHSA-wdrn-0001-0001")
+    withdrawn["withdrawn_at"] = TS
+    route = respx.get(GH_URL).mock(
+        return_value=httpx.Response(200, json=[withdrawn, _ghsa("GHSA-live-0001-0001")])
+    )
+    out = await _gh(http).fetch(SINCE)
+    assert [a.id for a in out] == ["GHSA-live-0001-0001"]
+    # And the API is asked to leave them out in the first place.
+    assert route.calls.last.request.url.params["is_withdrawn"] == "false"
+
+
+@respx.mock
+async def test_github_withdrawn_at_null_is_live(http):
+    live = _ghsa("GHSA-live-0002-0002")
+    live["withdrawn_at"] = None
+    respx.get(GH_URL).mock(return_value=httpx.Response(200, json=[live]))
+    out = await _gh(http).fetch(SINCE)
+    assert [a.id for a in out] == ["GHSA-live-0002-0002"]
 
 
 @respx.mock

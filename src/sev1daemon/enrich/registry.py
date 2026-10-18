@@ -18,6 +18,7 @@ have no downloads signal (see ``RegistryClient.SUPPORTED``).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import ClassVar
 from urllib.parse import quote
@@ -66,8 +67,11 @@ class RegistryClient:
         return _safe_int(body.get("downloads"))
 
     async def _pypi(self, name: str) -> int | None:
-        # pypistats.org gives per-day/week/month totals.
-        url = f"https://pypistats.org/api/packages/{quote(name, safe='')}/recent"
+        # pypistats.org gives per-day/week/month totals. It only answers for
+        # the PEP 503 normalised name: ``Django`` and ``ruamel.yaml`` are 404,
+        # ``django`` and ``ruamel-yaml`` are 200 (checked live 2026-10).
+        normalized = re.sub(r"[-_.]+", "-", name).lower()
+        url = f"https://pypistats.org/api/packages/{quote(normalized, safe='')}/recent"
         status, body, _ = await self._http.get_json(url, cache=True, timeout=20.0)
         if status != 200:
             _log_bad_status("PyPI", name, status, body)

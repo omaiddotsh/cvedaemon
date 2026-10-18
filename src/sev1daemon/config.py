@@ -263,6 +263,10 @@ class WebhookAction(ActionBase):
             raise ValueError(f"webhook url must be http(s): {v!r}")
         if not parsed.hostname:
             raise ValueError(f"webhook url missing host: {v!r}")
+        try:
+            parsed.port  # noqa: B018 - urlsplit only parses the port on access
+        except ValueError as exc:
+            raise ValueError(f"webhook url has an invalid port: {v!r}") from exc
         return v
 
     @field_validator("method")
@@ -467,6 +471,19 @@ class Config(_StrictModel):
             if a.name in seen:
                 raise ValueError(f"duplicate action name: {a.name!r}")
             seen.add(a.name)
+            # The dispatcher's SSRF guard refuses plain HTTP unless private
+            # URLs are allowed. Fail at load time, not on the first alert,
+            # which would otherwise be skipped 48 cycles in a row and given up.
+            if (
+                isinstance(a, WebhookAction)
+                and a.enabled
+                and a.url.lower().startswith("http://")
+                and not cfg.allow_private_urls
+            ):
+                raise ValueError(
+                    f"action {a.name!r}: plain http:// webhook urls are refused unless "
+                    "allow_private_urls is true (webhooks carry secrets; use https://)"
+                )
         return cfg
 
     @classmethod
